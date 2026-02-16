@@ -1,1 +1,0 @@
-(Solo PDFs de componentes comprados)
