@@ -1,0 +1,119 @@
+from flask import Flask, request, jsonify
+import sqlite3
+import os
+
+app = Flask(__name__)
+# Buscamos la base de datos en la misma carpeta que este archivo
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_NAME = os.path.join(BASE_DIR, "golpeometro.db")
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios (
+                        id INTEGER PRIMARY KEY,
+                        nombre TEXT,
+                        edad INTEGER,
+                        peso REAL,
+                        record REAL DEFAULT 0,
+                        g0 REAL DEFAULT 0, g1 REAL DEFAULT 0, g2 REAL DEFAULT 0, g3 REAL DEFAULT 0, g4 REAL DEFAULT 0
+                    )''')
+    conn.commit()
+    conn.close()
+
+@app.route('/')
+def home():
+    return "<h1>Servidor del Golpeometro Activo</h1><p>Prueba /usuarios o /usuario/1</p>"
+
+@app.route('/usuarios', methods=['GET'])
+def get_usuarios():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, nombre FROM usuarios LIMIT 4")
+    users = [{"id": row[0], "nombre": row[1]} for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(users)
+
+@app.route('/usuario/<int:user_id>', methods=['GET'])
+def get_usuario_detalle(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT record, peso, g0, g1, g2, g3, g4 FROM usuarios WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        return jsonify({
+            "record": row['record'],
+            "peso": row['peso'],
+            "historial": [row['g0'], row['g1'], row['g2'], row['g3'], row['g4']]
+        }), 200
+    else:
+        return jsonify({"error": "Usuario no encontrado"}), 404
+
+# REGISTRO DE GOLPES (Para el modo entrenamiento)
+@app.route('/registro_golpe', methods=['POST'])
+def registro_golpe():
+    data = request.json
+    user_id = data['id']
+    fuerza = data['fuerza']
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT record, g0, g1, g2, g3 FROM usuarios WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    if row:
+        record_actual, g0, g1, g2, g3 = row
+        nuevo_record = max(record_actual, fuerza)
+        cursor.execute('''UPDATE usuarios SET 
+                          record = ?, g0 = ?, g1 = ?, g2 = ?, g3 = ?, g4 = ? 
+                          WHERE id = ?''', (nuevo_record, fuerza, g0, g1, g2, g3, user_id))
+        conn.commit()
+    conn.close()
+    return jsonify({"status": "ok"})
+
+# -----------------------------------------------------
+# RUTA /DEBUG: EL CORAZÓN DEL PROYECTO
+# -----------------------------------------------------
+@app.route('/debug', methods=['GET', 'POST'])
+def debug_serial():
+    # Recibimos los datos en bruto y los limpiamos
+    data = request.args.get('data') or request.data.decode('utf-8', errors='ignore').strip()
+    print(f"📡 [RECIBIDO]: {data}")
+    
+    # HACK MULTIFUNCIONAL: Detecta si la trama contiene un intento de registro
+    # Funciona para: [registro|n|e|p], [eregistro|n|e|p], o cualquier cosa con '|'
+    if "|" in data:
+        try:
+            # Quitamos corchetes y dividimos por el pipe |
+            limpio = data.replace('[', '').replace(']', '')
+            partes = limpio.split('|')
+            
+            # Buscamos las posiciones: el nombre suele ser el índice 1
+            if len(partes) >= 4:
+                n_nombre = partes[1].strip()
+                n_peso = partes[2].strip()
+                n_edad = partes[3].strip()
+                
+                
+                conn = sqlite3.connect(DB_NAME)
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO usuarios (nombre, edad, peso) VALUES (?, ?, ?)", 
+                               (n_nombre, int(n_edad), float(n_peso)))
+                conn.commit()
+                conn.close()
+                print(f"✅ HACK EXITOSO: Atleta '{n_nombre}' registrado correctamente.")
+            else:
+                print("⚠️ Trama incompleta, faltan datos.")
+        except Exception as e:
+            print(f"❌ Error procesando el Hack: {e}")
+            
+    return "ok", 200
+
+if __name__ == '__main__':
+    init_db()
+    # Cambiamos debug a False si el servidor se reinicia solo mucho, 
+    # pero para la prueba déjalo en True.
+    app.run(host='0.0.0.0', port=8080, debug=True)
